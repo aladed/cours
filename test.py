@@ -1,34 +1,45 @@
-import torch
-import time
-
-N = 30_000  
-density = 0.0001 
-
-device_cpu = torch.device("cpu")
-device_gpu = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-torch.set_num_threads(1) 
+import xml.etree.ElementTree as ET
 
 
-indices = torch.randint(0, N, (2, int(N * N * density))) 
-values = torch.randn(int(N * N * density)) 
-
-sparse_matrix_cpu = torch.sparse_coo_tensor(indices, values, (N, N), device=device_cpu)
-sparse_matrix_gpu = sparse_matrix_cpu.to(device_gpu)
-
-dense_matrix_cpu = torch.randn(N, N, device=device_cpu)
-dense_matrix_gpu = dense_matrix_cpu.to(device_gpu)
-
-
-start = time.time()
-result_cpu = torch.sparse.mm(sparse_matrix_cpu, dense_matrix_cpu)
-end = time.time()
-print(f"PyTorch (CPU, 1 поток): {end - start:.3f} сек")
+mxfile = ET.Element("mxfile", host="app.diagrams.net")
+diagram = ET.SubElement(mxfile, "diagram", id="internet_shop_schema", name="Page-1")
+graph_model = ET.SubElement(diagram, "mxGraphModel", dx="1075", dy="569", grid="1", gridSize="10",
+                            guides="1", tooltips="1", connect="1", arrows="1", fold="1", page="1",
+                            pageScale="1", pageWidth="827", pageHeight="1169", math="0", shadow="0")
+root = ET.SubElement(graph_model, "root")
+ET.SubElement(root, "mxCell", id="0")
+ET.SubElement(root, "mxCell", id="1", parent="0")
 
 
-start = time.time()
-result_gpu = torch.sparse.mm(sparse_matrix_gpu, dense_matrix_gpu)
-torch.cuda.synchronize()
-end = time.time()
-print(f"PyTorch (GPU RTX 3080): {end - start:.3f} сек")
+def create_table(id, name, x, y):
+    table = ET.SubElement(root, "mxCell", id=id, value=name, style="swimlane", vertex="1", parent="1")
+    geom = ET.SubElement(table, "mxGeometry", x=str(x), y=str(y), width="160", height="120", as_="geometry")
+    return table
 
+
+tables = {
+    "user": create_table("user", "User", 20, 20),
+    "product": create_table("product", "Product", 220, 20),
+    "deal": create_table("deal", "Deal", 120, 180),
+    "pvz": create_table("pvz", "PVZ", 20, 360),
+    "delivery": create_table("delivery", "Delivery", 220, 360)
+}
+
+
+def create_relation(source, target):
+    return ET.SubElement(root, "mxCell", edge="1", source=source, target=target, parent="1")
+
+
+relations = [
+    create_relation("user", "deal"),
+    create_relation("product", "deal"),
+    create_relation("deal", "pvz"),
+    create_relation("deal", "delivery")
+]
+
+
+file_path = "internet_shop_schema.drawio"
+tree = ET.ElementTree(mxfile)
+tree.write(file_path, encoding="utf-8", xml_declaration=True)
+
+file_path
