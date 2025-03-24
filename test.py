@@ -1,45 +1,31 @@
-import xml.etree.ElementTree as ET
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize_scalar
 
+# Счётчики для вычислений функции
+function_calls = 0
 
-mxfile = ET.Element("mxfile", host="app.diagrams.net")
-diagram = ET.SubElement(mxfile, "diagram", id="internet_shop_schema", name="Page-1")
-graph_model = ET.SubElement(diagram, "mxGraphModel", dx="1075", dy="569", grid="1", gridSize="10",
-                            guides="1", tooltips="1", connect="1", arrows="1", fold="1", page="1",
-                            pageScale="1", pageWidth="827", pageHeight="1169", math="0", shadow="0")
-root = ET.SubElement(graph_model, "root")
-ET.SubElement(root, "mxCell", id="0")
-ET.SubElement(root, "mxCell", id="1", parent="0")
+# Определение функции с подсчётом вычислений
+def f(x):
+    global function_calls
+    function_calls += 1
+    return 5 * x**2 * np.exp(-x / 2)
 
+# Поиск максимума методом Брента (через минимизацию -f(x))
+result = minimize_scalar(
+    lambda x: -f(x),  # Минимизируем -f(x), чтобы найти максимум f(x)
+    bracket=(2, 6),   # Интервал поиска
+    method='brent'    # Метод Брента
+)
 
-def create_table(id, name, x, y):
-    table = ET.SubElement(root, "mxCell", id=id, value=name, style="swimlane", vertex="1", parent="1")
-    geom = ET.SubElement(table, "mxGeometry", x=str(x), y=str(y), width="160", height="120", as_="geometry")
-    return table
+x_max = result.x
+y_max = f(x_max)  # Учитываем последнее вычисление функции
 
+# Оценка количества итераций
+# Метод Брента вызывает функцию примерно 2-3 раза за итерацию
+iteration_count = function_calls // 2
 
-tables = {
-    "user": create_table("user", "User", 20, 20),
-    "product": create_table("product", "Product", 220, 20),
-    "deal": create_table("deal", "Deal", 120, 180),
-    "pvz": create_table("pvz", "PVZ", 20, 360),
-    "delivery": create_table("delivery", "Delivery", 220, 360)
-}
-
-
-def create_relation(source, target):
-    return ET.SubElement(root, "mxCell", edge="1", source=source, target=target, parent="1")
-
-
-relations = [
-    create_relation("user", "deal"),
-    create_relation("product", "deal"),
-    create_relation("deal", "pvz"),
-    create_relation("deal", "delivery")
-]
-
-
-file_path = "internet_shop_schema.drawio"
-tree = ET.ElementTree(mxfile)
-tree.write(file_path, encoding="utf-8", xml_declaration=True)
-
-file_path
+# Вывод результата
+print(f"Максимум функции находится в точке x = {x_max:.4f}, y = {y_max:.4f}")
+print(f"Количество итераций: {iteration_count}")
+print(f"Количество вычислений функции: {function_calls}")
