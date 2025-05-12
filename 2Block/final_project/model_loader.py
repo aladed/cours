@@ -3,6 +3,22 @@ import os
 import pandas as pd
 from sqlalchemy import create_engine
 
+import os
+from typing import List
+from fastapi import FastAPI
+from schema import PostGet
+from datetime import datetime
+
+app = FastAPI()
+
+class PostGet(BaseModel):
+    id: int
+    text: str
+    topic: str
+    class Config:
+        orm_mode = True
+
+
 
 def get_model_path(path: str) -> str:
     if os.environ.get("IS_LMS") == "1":
@@ -11,7 +27,7 @@ def get_model_path(path: str) -> str:
         return path
 
 def load_models():
-    model_path = get_model_path("catboost_model")
+    model_path = get_model_path("catboost_model3.cbm")
     model = CatBoostClassifier()
     model.load_model(model_path)
     return model
@@ -37,47 +53,52 @@ def load_features() -> pd.DataFrame:
     post_cf = batch_load_sql('SELECT * FROM sivolapovvr_post_features_lesson_22')
     return [user_cf, post_cf]
 
-#тут мы должны брать все post_cf с user который дан в запросе и делаем по ним предикт
-
-
-from fastapi import FastAPI, HTTPException
-from typing import List
-import pandas as pd
-from model_loader import load_models, load_features
-
-# Инициализация FastAPI
-app = FastAPI()
-
-# 1. Загружаем модель и фичи один раз при старте
 model = load_models()
-user_df, post_df = load_features()
+loaded_data = load_features()
 
-# 2. Эндпоинт рекомендаций
-@app.get("/post/recommendations/")
-def recommend(user_id: int):
-    # Найдем фичи пользователя
-    user_row = user_df[user_df["user_id"] == user_id]
-    if user_row.empty:
-        raise HTTPException(status_code=404, detail="User not found")
 
-    # Повторим фичи пользователя для каждого поста
-    user_expanded = pd.concat([user_row] * len(post_df), ignore_index=True).reset_index(drop=True)
-    user_expanded = user_expanded.drop(columns=["user_id"], errors="ignore")  # убираем user_id из признаков
 
-    # Объединяем с постами (axis=1 — по колонкам)
-    predict_df = pd.concat([user_expanded, post_df.drop(columns=["post_id"], errors="ignore")], axis=1)
+def recommended_posts(user_id:int, timestamp:datetime, limit:int):
+    user = loaded_data[0].loc[loaded_data[0].user_id == user_id].copy()
+    user["x"]=1
+    posts = loaded_data[1].copy()
+    posts["x"]=1
+    to_model = posts.merge(user, on='x',how='inner').set_index(['post_id',"user_id"]).drop(columns=['x','text','topic'])
+    predictions = model.predict_proba(to_model)
+    preds = pd.DataFrame(predictions[:,1], columns=['pred'])    
+    posts_with_preds = pd.concat([posts, preds], axis=1).sort_values('pred', ascending=False)
+    top5 = posts_with_preds[:limit][['post_id','text','topic']]
+    top5_dict = top5.to_dict(orient='records')
+    return top5_dict
 
-    # Добавляем обратно post_id для сортировки результатов
-    predict_df["post_id"] = post_df["post_id"].values
 
-    # Предсказание вероятностей
-    probs = model.predict_proba(predict_df)[:, 1]
-    predict_df["proba"] = probs
+import requests
+from datetime import datetime
 
-    # Возврат top-5 постов
-    top_5_posts = predict_df.sort_values("proba", ascending=False).head(5)["post_id"].tolist()
+# Укажите URL вашего сервиса
+url = "http://127.0.0.1:8000/post/recommendations/"
 
-    return {
-        "user_id": user_id,
-        "recommended_post_ids": top_5_posts
-    }
+# Параметры запроса
+params = {
+    "id": 123,  # ID пользователя
+    "time": datetime(2020, 5, 17), 
+    "limit": 5
+}
+
+# Отправка GET-запроса
+response = requests.get(url, params=params)
+
+# Проверка статуса и вывод результата
+if response.status_code == 200:
+    recommendations = response.json()
+    print("Рекомендованные посты:", recommendations)
+else:
+    print("Ошибка:", response.status_code, response.text)
+
+
+
+
+@app.get("/post/recommendations/", response_model=List[PostGet])
+
+def get_recommended_posts(id: int, timestamp:datetime, limit: int = 5) -> List[PostGet]:
+    return recommended_posts(id, timestamp, limit)
