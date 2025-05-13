@@ -1,12 +1,14 @@
+from pydantic import BaseModel
+from fastapi import FastAPI, Depends, HTTPException
+
+import requests
 from catboost import CatBoostClassifier
-import os
 import pandas as pd
 from sqlalchemy import create_engine
 
 import os
 from typing import List
-from fastapi import FastAPI
-from schema import PostGet
+
 from datetime import datetime
 
 app = FastAPI()
@@ -56,6 +58,14 @@ def load_features() -> pd.DataFrame:
 model = load_models()
 loaded_data = load_features()
 
+training_features = [
+    'Belarus', 'Cyprus', 'Estonia', 'Finland', 'Kazakhstan', 'Latvia', 'Russia',
+    'Switzerland', 'Turkey', 'Ukraine', 'city_te', '1', '19–24', '25–33', '34–45',
+    'старше 45', '1.1', '2', '3', '4', 'iOS', 'organic', 'like_count', 'views',
+    'ctr', 'mean_tfidf_scaled', 'topic_covid', 'topic_entertainment', 'topic_movie',
+    'topic_politics', 'topic_sport', 'topic_tech', 'text_length_group_medium',
+    'text_length_group_short'
+]
 
 
 def recommended_posts(user_id:int, timestamp:datetime, limit:int):
@@ -63,42 +73,37 @@ def recommended_posts(user_id:int, timestamp:datetime, limit:int):
     user["x"]=1
     posts = loaded_data[1].copy()
     posts["x"]=1
-    to_model = posts.merge(user, on='x',how='inner').set_index(['post_id',"user_id"]).drop(columns=['x','text','topic'])
+    to_model = posts.merge(user, on='x',how='inner').set_index(['post_id',"user_id"]).drop(columns=['x','text','topic','index_x', 'index_y'])
+    
+    to_model = to_model[training_features]
+    
     predictions = model.predict_proba(to_model)
     preds = pd.DataFrame(predictions[:,1], columns=['pred'])    
     posts_with_preds = pd.concat([posts, preds], axis=1).sort_values('pred', ascending=False)
-    top5 = posts_with_preds[:limit][['post_id','text','topic']]
+    top5 = posts_with_preds[:limit][['post_id','text','topic']].rename(columns={'post_id': 'id'})
     top5_dict = top5.to_dict(orient='records')
     return top5_dict
 
-
-import requests
-from datetime import datetime
-
-# Укажите URL вашего сервиса
-url = "http://127.0.0.1:8000/post/recommendations/"
-
-# Параметры запроса
-params = {
-    "id": 123,  # ID пользователя
-    "time": datetime(2020, 5, 17), 
-    "limit": 5
-}
-
-# Отправка GET-запроса
-response = requests.get(url, params=params)
-
-# Проверка статуса и вывод результата
-if response.status_code == 200:
-    recommendations = response.json()
-    print("Рекомендованные посты:", recommendations)
-else:
-    print("Ошибка:", response.status_code, response.text)
 
 
 
 
 @app.get("/post/recommendations/", response_model=List[PostGet])
-
-def get_recommended_posts(id: int, timestamp:datetime, limit: int = 5) -> List[PostGet]:
-    return recommended_posts(id, timestamp, limit)
+def recommended_posts(
+		id: int, 
+		time: datetime, 
+		limit: int = 10) -> List[PostGet]:
+    user = loaded_data[0].loc[loaded_data[0].user_id == id].copy()
+    user["x"]=1
+    posts = loaded_data[1].copy()
+    posts["x"]=1
+    to_model = posts.merge(user, on='x',how='inner').set_index(['post_id',"user_id"]).drop(columns=['x','text','topic','index_x', 'index_y'])
+    
+    to_model = to_model[training_features]
+    
+    predictions = model.predict_proba(to_model)
+    preds = pd.DataFrame(predictions[:,1], columns=['pred'])    
+    posts_with_preds = pd.concat([posts, preds], axis=1).sort_values('pred', ascending=False)
+    top5 = posts_with_preds[:limit][['post_id','text','topic']].rename(columns={'post_id': 'id'})
+    top5_dict = top5.to_dict(orient='records')
+    return top5_dict

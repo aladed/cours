@@ -1,74 +1,109 @@
-from fastapi import FastAPI, HTTPException
-import pandas as pd
-import os
+from pydantic import BaseModel
+from fastapi import FastAPI, Depends, HTTPException
+from schema import PostGet
+import requests
 from catboost import CatBoostClassifier
+import pandas as pd
 from sqlalchemy import create_engine
 
-# ========== Настройки ==========
-MODEL_FILENAME = "improved_catboost_model.cbm"
-USER_FEATURES_TABLE = "sivolapovvr_features_lesson_22"
-POST_FEATURES_TABLE = "sivolapovvr_post_features_lesson_22"
+import os
+from typing import List
 
-# ========== Загрузка модели ==========
+from datetime import datetime
+
+app = FastAPI()
+
+class PostGet(BaseModel):
+    id: int
+    text: str
+    topic: str
+    class Config:
+        orm_mode = True
+
+
+
 def get_model_path(path: str) -> str:
     if os.environ.get("IS_LMS") == "1":
         return '/workdir/user_input/model'
-    return path
+    else:
+        return path
 
-def load_model() -> CatBoostClassifier:
-    model_path = get_model_path(MODEL_FILENAME)
+def load_models():
+    model_path = get_model_path("catboost_model3.cbm")
     model = CatBoostClassifier()
     model.load_model(model_path)
     return model
 
-# ========== Загрузка фичей из БД ==========
+
 def batch_load_sql(query: str) -> pd.DataFrame:
-    CHUNKSIZE = 200_000
+    CHUNKSIZE = 200000
     engine = create_engine(
         "postgresql://robot-startml-ro:pheiph0hahj1Vaif@"
         "postgres.lab.karpov.courses:6432/startml"
     )
     conn = engine.connect().execution_options(stream_results=True)
     chunks = []
-    for chunk in pd.read_sql(query, conn, chunksize=CHUNKSIZE):
-        chunks.append(chunk)
+    for chunk_dataframe in pd.read_sql(query, conn, chunksize=CHUNKSIZE):
+        chunks.append(chunk_dataframe)
     conn.close()
     return pd.concat(chunks, ignore_index=True)
 
-def load_features():
-    user_df = batch_load_sql(f"SELECT * FROM {USER_FEATURES_TABLE}")
-    post_df = batch_load_sql(f"SELECT * FROM {POST_FEATURES_TABLE}")
-    return user_df, post_df
 
-# ========== Инициализация ==========
-app = FastAPI()
 
-model = load_model()
-user_df, post_df = load_features()
+def load_features() -> pd.DataFrame:
+    user_cf = batch_load_sql('SELECT * FROM sivolapovvr_features_lesson_22')
+    post_cf = batch_load_sql('SELECT * FROM sivolapovvr_post_features_lesson_22')
+    return [user_cf, post_cf]
 
-# ========== Эндпоинт рекомендаций ==========
-@app.get("/post/recommendations/")
-def recommend(user_id: int):
-    # Проверка: есть ли user
-    user_row = user_df[user_df["user_id"] == user_id]
-    if user_row.empty:
-        raise HTTPException(status_code=404, detail="User not found")
+model = load_models()
+loaded_data = load_features()
 
-    # Дублируем user-фичи на все посты
-    user_feats = pd.concat([user_row] * len(post_df), ignore_index=True).drop(columns=["user_id"], errors="ignore")
+training_features = [
+    'Belarus', 'Cyprus', 'Estonia', 'Finland', 'Kazakhstan', 'Latvia', 'Russia',
+    'Switzerland', 'Turkey', 'Ukraine', 'city_te', '1', '19–24', '25–33', '34–45',
+    'старше 45', '1.1', '2', '3', '4', 'iOS', 'organic', 'like_count', 'views',
+    'ctr', 'mean_tfidf_scaled', 'topic_covid', 'topic_entertainment', 'topic_movie',
+    'topic_politics', 'topic_sport', 'topic_tech', 'text_length_group_medium',
+    'text_length_group_short'
+]
 
-    # Объединяем с постовыми фичами
-    df_pred = pd.concat([user_feats, post_df.drop(columns=["post_id"], errors="ignore")], axis=1)
-    df_pred["post_id"] = post_df["post_id"].values
 
-    # Предикт
-    df_pred["proba"] = model.predict_proba(df_pred)[:, 1]
+def recommended_posts(user_id:int, timestamp:datetime, limit:int):
+    user = loaded_data[0].loc[loaded_data[0].user_id == user_id].copy()
+    user["x"]=1
+    posts = loaded_data[1].copy()
+    posts["x"]=1
+    to_model = posts.merge(user, on='x',how='inner').set_index(['post_id',"user_id"]).drop(columns=['x','text','topic','index_x', 'index_y'])
+    
+    to_model = to_model[training_features]
+    
+    predictions = model.predict_proba(to_model)
+    preds = pd.DataFrame(predictions[:,1], columns=['pred'])    
+    posts_with_preds = pd.concat([posts, preds], axis=1).sort_values('pred', ascending=False)
+    top5 = posts_with_preds[:limit][['post_id','text','topic']].rename(columns={'post_id': 'id'})
+    top5_dict = top5.to_dict(orient='records')
+    return top5_dict
 
-    # Топ-5 постов
-    top5 = df_pred.sort_values("proba", ascending=False).head(5)["post_id"].tolist()
 
-    return {
-        "user_id": user_id,
-        "recommended_post_ids": top5
-    }
 
+
+
+@app.get("/post/recommendations/", response_model=List[PostGet])
+def recommended_posts(
+		id: int, 
+		time: datetime, 
+		limit: int = 10) -> List[PostGet]:
+    user = loaded_data[0].loc[loaded_data[0].user_id == id].copy()
+    user["x"]=1
+    posts = loaded_data[1].copy()
+    posts["x"]=1
+    to_model = posts.merge(user, on='x',how='inner').set_index(['post_id',"user_id"]).drop(columns=['x','text','topic','index_x', 'index_y'])
+    
+    to_model = to_model[training_features]
+    
+    predictions = model.predict_proba(to_model)
+    preds = pd.DataFrame(predictions[:,1], columns=['pred'])    
+    posts_with_preds = pd.concat([posts, preds], axis=1).sort_values('pred', ascending=False)
+    top5 = posts_with_preds[:limit][['post_id','text','topic']].rename(columns={'post_id': 'id'})
+    top5_dict = top5.to_dict(orient='records')
+    return top5_dict
